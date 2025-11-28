@@ -3,13 +3,15 @@ import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
 import http from 'http';
 import { PrismaClient } from '@prisma/client';
+import { env } from "prisma/config";
+import "dotenv/config";
 
 const prisma = new PrismaClient();
 
 @Injectable()
 export class NLQueryService {
   private readonly logger = new Logger(NLQueryService.name);
-  private OLLAMA = process.env.OLLAMA_URL ?? ' https://smashing-needed-muskrat.ngrok-free.app/api';
+  private OLLAMA = process.env.AI_URL ?? env("AI_URL");
   private httpAgent = new http.Agent({ keepAlive: true, family: 4 });
 
   // allowed tables/fields map (whitelist)

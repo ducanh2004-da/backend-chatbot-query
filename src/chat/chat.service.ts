@@ -2,13 +2,15 @@
 import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
 import http from 'http';
+import { env } from "prisma/config";
+import "dotenv/config";
 
 @Injectable()
 export class ChatService {
   private readonly logger = new Logger(ChatService.name);
 
   // IMPORTANT: default to 127.0.0.1 (IPv4) to avoid ::1/IPv6 resolution issues
-  private OLLAMA_URL = process.env.OLLAMA_URL || ' https://smashing-needed-muskrat.ngrok-free.app/api';
+  private OLLAMA_URL = process.env.AI_URL ?? env("AI_URL");
 
   // Force IPv4 for axios requests
   private httpAgent = new http.Agent({ keepAlive: true, family: 4 });
