@@ -1,5 +1,7 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
+import { env } from "prisma/config";
+import "dotenv/config";
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -9,8 +11,8 @@ async function bootstrap() {
     origin: [
       'http://localhost:5173',
       'http://localhost:10000',
-      'https://blog-frontend-ebon-theta.vercel.app',
-      'https://blogplatform-backend-2ikg.onrender.com',
+      process.env.FRONTEND ?? env("FRONTEND"),
+      process.env.BACKEND2 ?? env("BACKEND2"),
     ],
     credentials: true,
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
