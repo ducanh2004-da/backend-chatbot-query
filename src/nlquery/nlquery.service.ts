@@ -3,15 +3,20 @@ import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
 import http from 'http';
 import { PrismaClient } from '@prisma/client';
-import { env } from "prisma/config";
-import "dotenv/config";
+import { env } from 'prisma/config';
+import 'dotenv/config';
 
 const prisma = new PrismaClient();
 
 @Injectable()
 export class NLQueryService {
   private readonly logger = new Logger(NLQueryService.name);
-  private OLLAMA = process.env.AI_URL ?? env("AI_URL");
+
+  // Gemini / Google Generative Language API settings (configure in .env)
+  private GEMINI_URL = "https://generativelanguage.googleapis.com"; 
+  private model = process.env.GEMINI_MODEL ?? env('GEMINI_MODEL') ?? 'gemini-1.0'; // change if needed
+  private apiKey = process.env.GEMINI_API_KEY ?? env('GEMINI_API_KEY');
+
   private httpAgent = new http.Agent({ keepAlive: true, family: 4 });
 
   // allowed tables/fields map (whitelist)
@@ -33,80 +38,100 @@ export class NLQueryService {
     Message: ['id', 'content', 'senderId', 'conversationId', 'createdAt'],
   } as Record<string, string[]>;
 
-  // call Ollama to translate NL -> JSON spec
-  async translateToSpec(nl: string) {
-    const prompt = `You are a helpful assistant that translates natural language requests into a JSON "query spec".
-Return ONLY valid JSON (no explanation). The JSON must follow this schema:
+  // call Gemini to translate NL -> JSON spec
+  // call Gemini to translate NL -> JSON spec (robust + detailed error logging + fallback)
+  // Replace your existing translateToSpec with this function
+async translateToSpec(nl: string) {
+  // Prompt — you can keep full prompt from before
+  const prompt = `You are a helpful assistant that translates natural language requests into a JSON "query spec".
+Return ONLY valid JSON (no explanation). The JSON must follow this schema exactly:
 
 {
-  "action": "select",      // only "select" is allowed
-  "table": "<TableName>",  // e.g. "Blog", "User", "Comment"
-  "fields": ["id","title","content"], // list of fields to return (optional => all)
-  "filters": [             // optional list of filter objects
-     { "field": "user.username", "op": "equals", "value": "Đỗ Đức Anh" }
-  ],
-  "limit": 3               // integer, max 100
+  "action": "select",
+  "table": "<TableName>",
+  "fields": ["id","title","content"],
+  "filters": [ { "field": "user.username", "op": "equals", "value": "Đỗ Đức Anh" } ],
+  "limit": 3
 }
 
 Rules:
-- Only return JSON object exactly following schema.
+- Only return a SINGLE JSON object exactly following the schema above.
 - Allowed ops: equals, contains, in, lt, lte, gt, gte.
 - Table names must be one of: Blog, User, Comment, Tag, Like, Conversation, Message.
 - Limit must be integer <= 100. If user doesn't specify, default limit=10.
 - For nested filters use dot notation (e.g. "user.username").
 - Do NOT output SQL, code, or any explanation — only the JSON object.
 
-Examples:
-Input: "Hãy lấy 3 bài blog của tác giả Đỗ Đức Anh"
-Output:
-{"action":"select","table":"Blog","fields":["id","title","content","createdAt"],"filters":[{"field":"user.username","op":"equals","value":"Đỗ Đức Anh"}],"limit":3}
+Input: "${nl}"
+Output:`;
 
-Input: "Cho tôi 5 bài gần nhất"
-Output:
-{"action":"select","table":"Blog","fields":["id","title","createdAt"],"filters":[],"limit":5}
-`; // use the full prompt template here (see above)
-    // For brevity, include the template string content from earlier
-    const body = {
-      model: 'gemma3:1b',
-      prompt: `${prompt}\n\nInput: "${nl}"\nOutput:`,
-      stream: false,
-    };
+  const url = `${this.GEMINI_URL}/v1beta/models/${this.model}:generateContent`;
 
-    const resp = await axios.post(`${this.OLLAMA}/generate`, body, {
-      headers: { 'Content-Type': 'application/json' },
+  // Use same body shape as your working ChatService.chatAi
+  const body = {
+    contents: [{ parts: [{ text: prompt }] }],
+    // DO NOT include unknown fields like temperature or maxOutputTokens
+  };
+
+  // Use same header style as chatAi
+  const headers = {
+    'Content-Type': 'application/json',
+    'x-goog-api-key': this.apiKey ?? '',
+  };
+
+  // debug logs (optional, remove in prod)
+  this.logger.debug(`Gemini request url=${url}`);
+  this.logger.debug(`Gemini request body preview: ${prompt.slice(0, 400)}${prompt.length > 400 ? '...' : ''}`);
+
+  try {
+    const resp = await axios.post(url, body, {
+      headers,
       timeout: 20000,
       httpAgent: this.httpAgent,
     });
 
-    // Ollama may return { text: "...json..." } or structured; handle both
     const data = resp.data;
     let raw = '';
-    if (typeof data === 'string') raw = data;
-    if (typeof data === 'string') {
-      raw = data;
-    } else if (data.response) {
-      raw = data.response;
-    } else if (data.text) {
-      raw = data.text;
-    } else {
-      raw = JSON.stringify(data);
-    }
 
-    // try to parse JSON out of raw (strip trailing text)
+    // robust extraction — same patterns you used elsewhere and in chatAi
+    raw =
+      data?.candidates?.[0]?.content?.parts?.[0]?.text ??
+      data?.outputs?.[0]?.contents?.[0]?.text ??
+      data?.results?.[0]?.content ??
+      data?.text ??
+      data?.response ??
+      (typeof data === 'string' ? data : JSON.stringify(data));
+
+    raw = (raw ?? '').toString().trim();
+    this.logger.debug('Raw model output preview: ' + raw.slice(0, 1000));
+
+    // try parse directly, else extract first {...}
     try {
-      const parsed = JSON.parse(raw);
-      return parsed;
-    } catch (e) {
-      // maybe model returned some prefix/suffix: attempt to extract first {...}
-      const m = raw.match(/\{[\s\S]*\}/);
-      if (m) {
+      return JSON.parse(raw);
+    } catch (err) {
+      const match = raw.match(/\{[\s\S]*\}/);
+      if (match) {
         try {
-          return JSON.parse(m[0]);
-        } catch {}
+          return JSON.parse(match[0]);
+        } catch (e) {
+          this.logger.error('Failed parsing JSON after regex extract. Raw output (first 2000 chars): ' + raw.slice(0, 2000));
+          throw new Error('Failed to parse JSON spec from model response (extracted substring parse failed).');
+        }
       }
-      throw new Error('Failed to parse JSON spec from model response');
+      this.logger.error('Failed to parse JSON and no JSON substring found. Raw output (first 2000 chars): ' + raw.slice(0, 2000));
+      throw new Error('Failed to parse JSON spec from model response (no JSON found).');
     }
+  } catch (err: any) {
+    // Log detailed error for debugging (don't print API key)
+    if (err?.response) {
+      this.logger.error(`Gemini request failed status=${err.response.status} statusText=${err.response.statusText}; responseData=${JSON.stringify(err.response.data).slice(0,2000)}`);
+    } else {
+      this.logger.error('Gemini request error: ' + (err?.message ?? err));
+    }
+    throw err;
   }
+}
+
 
   // validate spec and sanitize
   validateSpec(spec: any) {
@@ -150,12 +175,20 @@ Output:
         const [rel, sub] = f.field.split('.', 2);
         where[rel] = where[rel] || {};
         if (f.op === 'equals') where[rel][sub] = f.value;
-        else if (f.op === 'contains') where[rel][sub] = { contains: f.value };
-        // add more ops as needed
+        else if (f.op === 'contains') where[rel][sub] = { contains: f.value, mode: 'insensitive' };
+        else if (f.op === 'in') where[rel][sub] = { in: f.value };
+        else if (f.op === 'lt') where[rel][sub] = { lt: f.value };
+        else if (f.op === 'lte') where[rel][sub] = { lte: f.value };
+        else if (f.op === 'gt') where[rel][sub] = { gt: f.value };
+        else if (f.op === 'gte') where[rel][sub] = { gte: f.value };
       } else {
         if (f.op === 'equals') where[f.field] = f.value;
-        else if (f.op === 'contains') where[f.field] = { contains: f.value };
+        else if (f.op === 'contains') where[f.field] = { contains: f.value, mode: 'insensitive' };
         else if (f.op === 'in') where[f.field] = { in: f.value };
+        else if (f.op === 'lt') where[f.field] = { lt: f.value };
+        else if (f.op === 'lte') where[f.field] = { lte: f.value };
+        else if (f.op === 'gt') where[f.field] = { gt: f.value };
+        else if (f.op === 'gte') where[f.field] = { gte: f.value };
       }
     }
     // select mapping
@@ -169,20 +202,17 @@ Output:
     spec = this.validateSpec(spec);
     const q = this.buildPrismaQuery(spec);
 
-    // only implement for Blog in example; extend for other tables:
     if (spec.table === 'Blog') {
-      // if user relation selected in fields, we need to include user select
-      // but since allowed fields didn't include nested 'user.username' as field,
-      // we can include user relation if filter used; for simplicity, include user (username) if filter uses it
+      // If a filter uses user.*, include the relation in select so we can return it
       if ((spec.filters || []).some((f: any) => f.field.startsWith('user.'))) {
-        // ensure select includes user with username
-        q.select.user = { select: { username: true, id: true } };
+        q.select.user = { select: { username: true, id: true, email: true } };
       }
+      // Note: Prisma expects 'select' to be exact shape; ensure q.select exists
       const rows = await prisma.blog.findMany(q);
       return rows;
     }
 
-    // add other tables similarly...
+    // You can add other tables (User, Comment...) with similar mapping
     throw new Error('Table not implemented in server mapping yet');
   }
 
@@ -192,8 +222,8 @@ Output:
     const spec = await this.translateToSpec(nl);
     this.logger.debug('Spec from LLM: ' + JSON.stringify(spec));
     const rows = await this.runSpec(spec);
-    const result = { spec, rows }
-    console.log("Keets qua:", result);
+    const result = { spec, rows };
+    console.log('Kết quả:', result);
     return result;
   }
 }
