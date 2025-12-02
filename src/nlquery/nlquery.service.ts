@@ -39,8 +39,6 @@ export class NLQueryService {
   } as Record<string, string[]>;
 
   // call Gemini to translate NL -> JSON spec
-  // call Gemini to translate NL -> JSON spec (robust + detailed error logging + fallback)
-  // Replace your existing translateToSpec with this function
 async translateToSpec(nl: string) {
   // Prompt — you can keep full prompt from before
   const prompt = `You are a helpful assistant that translates natural language requests into a JSON "query spec".
