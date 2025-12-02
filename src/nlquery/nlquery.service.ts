@@ -192,6 +192,8 @@ Output:
     const spec = await this.translateToSpec(nl);
     this.logger.debug('Spec from LLM: ' + JSON.stringify(spec));
     const rows = await this.runSpec(spec);
-    return { spec, rows };
+    const result = { spec, rows }
+    console.log("Keets qua:", result);
+    return result;
   }
 }

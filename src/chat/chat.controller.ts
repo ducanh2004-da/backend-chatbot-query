@@ -16,7 +16,7 @@ export class ChatController {
     }
 
     try {
-      const result = await this.chatService.ask(message);
+      const result = await this.chatService.chatAi(message);
       // ensure we return predictable shape
       return { text: result?.text ?? '' };
     } catch (err) {
